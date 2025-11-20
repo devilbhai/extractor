@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Install Node
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 18
@@ -26,4 +26,9 @@ jobs:
         env:
           CALLBACK_URL: ${{ secrets.CALLBACK_URL }}
         run: |
-          node scraper.js --query="${{ github.event.client_payload.query }}" --city="${{ github.event.client_payload.city }}" --state="${{ github.event.client_payload.state }}" --out=results.csv --job_id="${{ github.event.client_payload.job_id }}"
+          node scraper.js \
+            --query="${{ github.event.client_payload.query }}" \
+            --city="${{ github.event.client_payload.city }}" \
+            --state="${{ github.event.client_payload.state }}" \
+            --out=results.csv \
+            --job_id="${{ github.event.client_payload.job_id }}"
