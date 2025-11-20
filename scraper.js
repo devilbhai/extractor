@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const puppeteer = require("puppeteer");
 const argv = require("minimist")(process.argv.slice(2));
 const FormData = require("form-data");
@@ -29,9 +30,14 @@ async function postProgress(count, percent, status = "running") {
 }
 
 (async () => {
+
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox"]
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage"
+        ]
     });
 
     const page = await browser.newPage();
@@ -43,9 +49,9 @@ async function postProgress(count, percent, status = "running") {
     const url = "https://www.google.com/maps/search/" + encodeURIComponent(QUERY + " " + CITY);
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // LOAD YOUR WORKING content.js
+    // LOAD content.js FROM REPO (ABSOLUTE PATH)
     await page.addScriptTag({
-        url: "https://raw.githubusercontent.com/devilbhai/extractor/main/content.js"
+        path: path.join(__dirname, "content.js")
     });
 
     let results = [];
@@ -55,11 +61,12 @@ async function postProgress(count, percent, status = "running") {
 
     for (let i = 0; i < 80; i++) {
 
-        // Run extraction batch inside Maps page
-        const batch = await page.evaluate(async () => {
-            if (typeof window.devilRunExtraction !== "function") return [];
-            const part = await window.extractDevilData();
-            return part;
+        // Extract batch using your real function
+        const batch = await page.evaluate(() => {
+            if (typeof window.extractDevilData === "function") {
+                return window.extractDevilData();
+            }
+            return [];
         });
 
         batch.forEach(b => {
@@ -71,27 +78,24 @@ async function postProgress(count, percent, status = "running") {
             results.push(b);
         });
 
-        // Send progress
-        const percent = Math.min(99, Math.floor((results.length / 30) * 10));
+        const percent = Math.min(99, Math.floor((results.length / 40) * 10));
         await postProgress(results.length, percent, "running");
 
-        // Scroll in Maps
         await page.evaluate(() => {
             const sc = document.querySelector('.m6QErb[aria-label]');
             if (sc) sc.scrollTop = sc.scrollHeight;
         });
 
-        await sleep(800);
+        await sleep(900);
 
         if (results.length === lastCount) noGrowth++;
         else noGrowth = 0;
 
         lastCount = results.length;
 
-        if (noGrowth >= 5) break;
+        if (noGrowth >= 6) break;
     }
 
-    // Convert results to CSV
     const rows = [
         ["Name", "Phone", "Category", "Rating", "Address", "City", "State"],
         ...results.map(r => [
@@ -105,32 +109,25 @@ async function postProgress(count, percent, status = "running") {
         ])
     ];
 
-    const csv = rows
-        .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(","))
-        .join("\n");
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
 
     fs.writeFileSync(OUT, csv, "utf8");
 
-    // Upload final CSV
     if (CALLBACK) {
         try {
             const f = new FormData();
             f.append("job_id", JOB_ID);
             f.append("file", fs.createReadStream(OUT));
-
             await fetch(CALLBACK, { method: "POST", body: f });
         } catch (e) {
-            // fallback curl
             const { execSync } = require("child_process");
             execSync(`curl -X POST -F "job_id=${JOB_ID}" -F "file=@${OUT}" "${CALLBACK}"`);
         }
 
-        // Final status
         await postProgress(results.length, 100, "completed");
     }
 
     await browser.close();
-
     console.log("Extracted:", results.length);
 
 })();
