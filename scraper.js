@@ -26,21 +26,18 @@ async function postProgress(count, percent, status = "running") {
                 status
             })
         });
-    } catch (e) { }
+    } catch (e) {}
 }
 
 (async () => {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage"
-        ]
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
     const page = await browser.newPage();
+
     await page.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/115 Safari/537.36"
@@ -49,56 +46,40 @@ async function postProgress(count, percent, status = "running") {
     const url = "https://www.google.com/maps/search/" + encodeURIComponent(QUERY + " " + CITY);
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // LOAD content.js FROM REPO (ABSOLUTE PATH)
+    // Inject content.js once
     await page.addScriptTag({
         path: path.join(__dirname, "content.js")
     });
 
-    let results = [];
-    let seen = new Set();
-    let noGrowth = 0;
-    let lastCount = 0;
-
-    for (let i = 0; i < 80; i++) {
-
-        // Extract batch using your real function
-        const batch = await page.evaluate(() => {
-            if (typeof window.extractDevilData === "function") {
-                return window.extractDevilData();
-            }
+    // ============================
+    // 🔥 RUN COMPLETE EXTRACTION
+    // ============================
+    let allResults = await page.evaluate(async () => {
+        if (typeof window.devilRunExtraction !== "function") {
             return [];
-        });
+        }
+        return await window.devilRunExtraction();
+    });
 
-        batch.forEach(b => {
-            if (!b.phone) return;
-            const ph = b.phone.replace(/\D/g, "");
-            if (ph.length !== 10) return;
-            if (seen.has(ph)) return;
+    // Dedupe by 10 digit phone
+    let seen = new Set();
+    let finalResults = [];
+
+    allResults.forEach(r => {
+        let ph = (r.phone || "").replace(/\D/g, "");
+        if (ph.length === 10 && !seen.has(ph)) {
             seen.add(ph);
-            results.push(b);
-        });
+            finalResults.push(r);
+        }
+    });
 
-        const percent = Math.min(99, Math.floor((results.length / 40) * 10));
-        await postProgress(results.length, percent, "running");
+    // Progress 100%
+    await postProgress(finalResults.length, 100, "completed");
 
-        await page.evaluate(() => {
-            const sc = document.querySelector('.m6QErb[aria-label]');
-            if (sc) sc.scrollTop = sc.scrollHeight;
-        });
-
-        await sleep(900);
-
-        if (results.length === lastCount) noGrowth++;
-        else noGrowth = 0;
-
-        lastCount = results.length;
-
-        if (noGrowth >= 6) break;
-    }
-
-    const rows = [
+    // Build CSV
+    let rows = [
         ["Name", "Phone", "Category", "Rating", "Address", "City", "State"],
-        ...results.map(r => [
+        ...finalResults.map(r => [
             r.name || "",
             r.phone || "",
             QUERY,
@@ -113,21 +94,23 @@ async function postProgress(count, percent, status = "running") {
 
     fs.writeFileSync(OUT, csv, "utf8");
 
+    // Upload to callback
     if (CALLBACK) {
         try {
-            const f = new FormData();
-            f.append("job_id", JOB_ID);
-            f.append("file", fs.createReadStream(OUT));
-            await fetch(CALLBACK, { method: "POST", body: f });
-        } catch (e) {
+            const form = new FormData();
+            form.append("job_id", JOB_ID);
+            form.append("file", fs.createReadStream(OUT));
+
+            await fetch(CALLBACK, { method: "POST", body: form });
+        } catch (err) {
             const { execSync } = require("child_process");
             execSync(`curl -X POST -F "job_id=${JOB_ID}" -F "file=@${OUT}" "${CALLBACK}"`);
         }
 
-        await postProgress(results.length, 100, "completed");
+        // send completed status
+        await postProgress(finalResults.length, 100, "completed");
     }
 
     await browser.close();
-    console.log("Extracted:", results.length);
-
+    console.log("Extracted:", finalResults.length);
 })();
