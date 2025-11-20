@@ -42,7 +42,10 @@ async function postProgress(count, percent, status = "running") {
         "https://www.google.com/maps/search/" + encodeURIComponent(`${QUERY} ${CITY}`),
         { waitUntil: "networkidle2", timeout: 60000 }
     );
-
+const html = await page.evaluate(() => document.body.innerHTML);
+fs.writeFileSync("debug.html", html);
+console.log("HTML saved");
+    
     // Inject content.js ONCE
     await page.addScriptTag({
         path: path.join(__dirname, "content.js")
