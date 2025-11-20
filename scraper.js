@@ -19,12 +19,7 @@ async function postProgress(count, percent, status = "running") {
         await fetch(CALLBACK, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                job_id: JOB_ID,
-                count,
-                percent,
-                status
-            })
+            body: JSON.stringify({ job_id: JOB_ID, count, percent, status })
         });
     } catch (e) {}
 }
@@ -33,11 +28,7 @@ async function postProgress(count, percent, status = "running") {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage"
-        ]
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
     const page = await browser.newPage();
@@ -47,97 +38,70 @@ async function postProgress(count, percent, status = "running") {
         "(KHTML, like Gecko) Chrome/115 Safari/537.36"
     );
 
-    const url =
-        "https://www.google.com/maps/search/" +
-        encodeURIComponent(`${QUERY} ${CITY}`);
+    await page.goto(
+        "https://www.google.com/maps/search/" + encodeURIComponent(`${QUERY} ${CITY}`),
+        { waitUntil: "networkidle2", timeout: 60000 }
+    );
 
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+    // Inject content.js ONCE
+    await page.addScriptTag({
+        path: path.join(__dirname, "content.js")
+    });
 
-    // ================================
-    // 🔥 Inject content.js ONLY ONCE
-    // ================================
-    const alreadyInjected = await page.evaluate(() => window.__DEVIL_INJECTED__ === true);
+    let results = [];
+    let seen = new Set();
 
-    if (!alreadyInjected) {
-        await page.addScriptTag({
-            path: path.join(__dirname, "content.js")
+    for (let i = 0; i < 60; i++) {
+
+        // extract visible batch
+        let batch = await page.evaluate(() => {
+            return (typeof extractDevilData === "function") ? extractDevilData() : [];
         });
 
+        batch.forEach(b => {
+            if (!seen.has(b.phone)) {
+                seen.add(b.phone);
+                results.push(b);
+            }
+        });
+
+        await postProgress(results.length, Math.min(99, i * 2), "running");
+
+        // scroll down
         await page.evaluate(() => {
-            window.__DEVIL_INJECTED__ = true;
+            let t = document.querySelector('.m6QErb[aria-label]');
+            if (t) t.scrollTop = t.scrollHeight;
         });
+
+        await sleep(1000);
     }
 
-    // ================================
-    // 🔥 RUN ONE FULL EXTRACTION
-    // ================================
-    let allResults = await page.evaluate(async () => {
-        if (typeof window.devilRunExtraction !== "function") {
-            return [];
-        }
-        return await window.devilRunExtraction();
-    });
-
-    // ================
-    // REMOVE DUPLICATES
-    // ================
-    let seen = new Set();
-    let finalResults = [];
-
-    allResults.forEach(r => {
-        let ph = (r.phone || "").replace(/\D/g, "");
-        if (ph.length === 10 && !seen.has(ph)) {
-            seen.add(ph);
-            finalResults.push(r);
-        }
-    });
-
-    // Update progress
-    await postProgress(finalResults.length, 100, "completed");
-
-    // ============================
-    // 🔥 SAVE CSV
-    // ============================
+    // Write CSV
     let rows = [
         ["Name", "Phone", "Category", "Rating", "Address", "City", "State"],
-        ...finalResults.map(r => [
-            r.name || "",
-            r.phone || "",
-            QUERY,
-            r.rating || "",
-            r.address || "",
-            CITY,
-            STATE
+        ...results.map(r => [
+            r.name, r.phone, QUERY, r.rating, r.address, CITY, STATE
         ])
     ];
 
-    const csv = rows
-        .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(","))
-        .join("\n");
+    fs.writeFileSync(
+        OUT,
+        rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n"),
+        "utf8"
+    );
 
-    fs.writeFileSync(OUT, csv, "utf8");
-
-    // ============================
-    // 🔥 SEND BACK TO CALLBACK
-    // ============================
+    // Upload CSV to callback
     if (CALLBACK) {
         try {
-            const form = new FormData();
-            form.append("job_id", JOB_ID);
-            form.append("file", fs.createReadStream(OUT));
-
-            await fetch(CALLBACK, { method: "POST", body: form });
-        } catch (err) {
-            const { execSync } = require("child_process");
-            execSync(
-                `curl -X POST -F "job_id=${JOB_ID}" -F "file=@${OUT}" "${CALLBACK}"`
-            );
-        }
-
-        await postProgress(finalResults.length, 100, "completed");
+            const fd = new FormData();
+            fd.append("job_id", JOB_ID);
+            fd.append("file", fs.createReadStream(OUT));
+            await fetch(CALLBACK, { method: "POST", body: fd });
+        } catch (e) {}
+        await postProgress(results.length, 100, "completed");
     }
 
+    console.log("Extracted:", results.length);
     await browser.close();
-    console.log("Extracted:", finalResults.length);
 
 })();
