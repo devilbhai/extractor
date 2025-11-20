@@ -33,7 +33,11 @@ async function postProgress(count, percent, status = "running") {
 
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage"
+        ]
     });
 
     const page = await browser.newPage();
@@ -43,17 +47,30 @@ async function postProgress(count, percent, status = "running") {
         "(KHTML, like Gecko) Chrome/115 Safari/537.36"
     );
 
-    const url = "https://www.google.com/maps/search/" + encodeURIComponent(QUERY + " " + CITY);
+    const url =
+        "https://www.google.com/maps/search/" +
+        encodeURIComponent(`${QUERY} ${CITY}`);
+
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
 
-    // Inject content.js once
-    await page.addScriptTag({
-        path: path.join(__dirname, "content.js")
-    });
+    // ================================
+    // 🔥 Inject content.js ONLY ONCE
+    // ================================
+    const alreadyInjected = await page.evaluate(() => window.__DEVIL_INJECTED__ === true);
 
-    // ============================
-    // 🔥 RUN COMPLETE EXTRACTION
-    // ============================
+    if (!alreadyInjected) {
+        await page.addScriptTag({
+            path: path.join(__dirname, "content.js")
+        });
+
+        await page.evaluate(() => {
+            window.__DEVIL_INJECTED__ = true;
+        });
+    }
+
+    // ================================
+    // 🔥 RUN ONE FULL EXTRACTION
+    // ================================
     let allResults = await page.evaluate(async () => {
         if (typeof window.devilRunExtraction !== "function") {
             return [];
@@ -61,7 +78,9 @@ async function postProgress(count, percent, status = "running") {
         return await window.devilRunExtraction();
     });
 
-    // Dedupe by 10 digit phone
+    // ================
+    // REMOVE DUPLICATES
+    // ================
     let seen = new Set();
     let finalResults = [];
 
@@ -73,10 +92,12 @@ async function postProgress(count, percent, status = "running") {
         }
     });
 
-    // Progress 100%
+    // Update progress
     await postProgress(finalResults.length, 100, "completed");
 
-    // Build CSV
+    // ============================
+    // 🔥 SAVE CSV
+    // ============================
     let rows = [
         ["Name", "Phone", "Category", "Rating", "Address", "City", "State"],
         ...finalResults.map(r => [
@@ -90,11 +111,15 @@ async function postProgress(count, percent, status = "running") {
         ])
     ];
 
-    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const csv = rows
+        .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(","))
+        .join("\n");
 
     fs.writeFileSync(OUT, csv, "utf8");
 
-    // Upload to callback
+    // ============================
+    // 🔥 SEND BACK TO CALLBACK
+    // ============================
     if (CALLBACK) {
         try {
             const form = new FormData();
@@ -104,13 +129,15 @@ async function postProgress(count, percent, status = "running") {
             await fetch(CALLBACK, { method: "POST", body: form });
         } catch (err) {
             const { execSync } = require("child_process");
-            execSync(`curl -X POST -F "job_id=${JOB_ID}" -F "file=@${OUT}" "${CALLBACK}"`);
+            execSync(
+                `curl -X POST -F "job_id=${JOB_ID}" -F "file=@${OUT}" "${CALLBACK}"`
+            );
         }
 
-        // send completed status
         await postProgress(finalResults.length, 100, "completed");
     }
 
     await browser.close();
     console.log("Extracted:", finalResults.length);
+
 })();
